@@ -20,6 +20,20 @@ class MatchCancelled(Exception):
     pass
 
 
+def _state_payload(state, **extra):
+    """Flatten a FightState into one event payload plus optional extra keys.
+
+    Event consumers (the JS simulator and the interaction log) read state fields
+    DIRECTLY at ``payload.<field>`` — e.g. ``payload.rounds_won``, ``payload.positions``,
+    ``payload.health``, ``payload.stamina``, ``payload.current_round``, ``payload.winner``.
+    So we must NOT wrap the state a second time. ``extra`` (e.g. ``round=…``,
+    ``winner=…``) is merged last so it overrides any same-named key in the state.
+    """
+    payload = state.to_dict()
+    payload.update(extra)
+    return payload
+
+
 class _EventSink(list):
     """A list that also forwards each appended event to an optional callback.
 
@@ -65,7 +79,7 @@ class FightEngine:
         usages = []
         state = FightState()
 
-        events.append(ev.make_event(ev.MATCH_STARTED, payload=state.to_dict()))
+        events.append(ev.make_event(ev.MATCH_STARTED, **_state_payload(state)))
 
         for _round in range(1, rules.max_rounds(self.core) + 1):
             if state.winner is not None:
@@ -78,22 +92,22 @@ class FightEngine:
             state.damage_dealt = [0.0, 0.0]
             state.round_history = []
 
-            events.append(ev.make_event(ev.ROUND_STARTED, round=_round, payload=state.to_dict()))
+            events.append(ev.make_event(ev.ROUND_STARTED, **_state_payload(state, round=_round)))
 
             while not rules.is_round_over(state, self.core):
                 if should_stop and should_stop():
                     raise MatchCancelled()
-                events.append(ev.make_event(ev.EXCHANGE_STARTED, payload=state.to_dict()))
+                events.append(ev.make_event(ev.EXCHANGE_STARTED, **_state_payload(state)))
                 self._play_exchange(state, events, usages)
 
             winner = rules.round_winner(state, self.core)
             state.rounds_won[winner] += 1
-            events.append(ev.make_event(ev.ROUND_WON, round=_round, winner=winner, payload=state.to_dict()))
+            events.append(ev.make_event(ev.ROUND_WON, **_state_payload(state, round=_round, winner=winner)))
             if rules.is_match_won(state.rounds_won, self.core):
                 state.winner = winner
 
         state.winner = 0 if state.rounds_won[0] > state.rounds_won[1] else 1
-        events.append(ev.make_event(ev.MATCH_FINISHED, payload=state.to_dict()))
+        events.append(ev.make_event(ev.MATCH_FINISHED, **_state_payload(state)))
         return events, state.to_dict(), usages
 
     # -- one exchange -------------------------------------------------------

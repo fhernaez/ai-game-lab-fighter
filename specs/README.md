@@ -47,10 +47,12 @@ understand how each decision and each attribute shaped the result.
 
 ## See also
 
+- **`00_INDEX.md`** — start here: index, reading order, and LLM-agent operating notes.
+- **`manifest.yaml`** — machine-readable project metadata (stack, commands, spec list).
 - `FIGHTER_SPEC.md` — the complete fight mechanics, attribute schema, and economy.
-- `ARCHITECTURE.md`, `DATA_MODEL.md`, `EDUCATIONAL_MODEL.md`, `CODING_AGENT_PROMPT.md`,
-  `SECURITY_AND_SANDBOX.md`, `FOLDER_STRUCTURE.md`, `PROMPT_ARCHITECTURE.md`,
-  `DEFAULT_PROMPTS.md`.
+- `ARCHITECTURE.md` (incl. the **event contract**), `DATA_MODEL.md`,
+  `EDUCATIONAL_MODEL.md`, `CODING_AGENT_PROMPT.md`, `SECURITY_AND_SANDBOX.md`,
+  `FOLDER_STRUCTURE.md`, `PROMPT_ARCHITECTURE.md`, `DEFAULT_PROMPTS.md`.
 
 ## Non-goals
 

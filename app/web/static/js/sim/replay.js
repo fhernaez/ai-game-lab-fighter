@@ -2,8 +2,18 @@
  * replay.js — deterministic event-log → timeline engine for the fight.
  *
  * Compiles the fight's event stream into animation segments with cumulative start
- * times, then renders any point in time by replaying segments up to t. This gives
+ * times, then renders any point in time by replaying segments up to `t`. This gives
  * play / pause / seek / speed with a single applyProgress(t) method.
+ *
+ * Segment types (produced in `build`, applied in `applySegment`):
+ *   - "move"   : a fighter's footwork. Interpolated between `from` and `to` over the
+ *                segment duration so the gap between the fighters changes smoothly.
+ *   - "attack" : a fighter throws a strike (pose = attack1/attack2/attack3).
+ *   - "hit"    : a fighter is struck (pose = "hit", plus a knockback/flash window).
+ *   - "block"  : a fighter raises its guard.
+ *   - "dodge"  : a fighter slips an attack (pose = "jump" + a dodge window).
+ *   - "state"  : an instant (0-duration) patch of health / stamina / rounds / winner,
+ *                plus a transient round-won banner.
  */
 
 import { TEAM_NAMES } from "./arena.js";
@@ -14,6 +24,7 @@ const ATTACK_DUR = 460;       // duration of a kick animation
 const HIT_DUR = 380;          // duration of the "take a hit" reaction
 const BLOCK_DUR = 420;        // duration of a block guard
 const DODGE_DUR = 420;        // duration of a dodge
+const ROUND_BANNER_MS = 1500; // how long the "ROUND N — RED/BLUE" banner stays visible
 
 // Home positions (world x) — must match core/rules.py HOME_POSITIONS.
 const HOME = { 0: 20, 1: 80 };
@@ -34,6 +45,8 @@ export class MatchState {
     this.rounds = [0, 0];
     this.currentRound = 1;
     this.winner = null;
+    // Transient "ROUND N — RED/BLUE" banner; cleared on the next round start.
+    this.roundBanner = null;
     this.lastActor = null;
 
     teams.forEach((team, ti) => {
@@ -41,15 +54,15 @@ export class MatchState {
         teamIndex: ti,
         teamName: team.name,
         label: TEAM_NAMES[ti],
-        x: HOME[ti],
-        action: "idle",
-        actionStart: 0,
-        actionDur: 400,
+        x: HOME[ti],       // world position (0..100); drives the visual gap
+        action: "idle",    // current pose key
+        actionStart: 0,    // when the current pose segment began (for frame timing)
+        actionDur: 400,    // duration of the current pose segment
         health: 100,
         stamina: 100,
-        pulseUntil: -1,
-        guardUntil: -1,
-        dodgeUntil: -1,
+        pulseUntil: -1,    // hit-flash + knockback window (timestamp)
+        guardUntil: -1,    // block-guard window (timestamp)
+        dodgeUntil: -1,    // dodge-lean window (timestamp)
       });
     });
   }
@@ -73,6 +86,7 @@ export class ReplayEngine {
   build() {
     const segments = [];
     let cursor = 0;
+    // `push` appends a segment and advances the shared timeline cursor. `dur` is in ms.
     const push = (type, dur, data) => {
       segments.push({ type, start: cursor, dur, end: cursor + dur, ...data });
       cursor += dur;
@@ -80,11 +94,15 @@ export class ReplayEngine {
 
     for (const ev of this.events) {
       const p = ev.payload || {};
+      // Every action event carries the acting team index at `payload.team`.
       const t = typeof p.team === "number" ? p.team : null;
 
       if (ev.event_type === "MATCH_STARTED") {
+        // Initial positions/health/stamina/rounds arrive here (flattened payload).
         push("state", 0, { patch: { positions: p.positions, health: p.health, stamina: p.stamina, rounds: p.rounds_won } });
       } else if (ev.event_type === "ROUND_STARTED") {
+        // Reset both fighters (positions back to home, full health/stamina) and
+        // clear the previous round's banner.
         push("state", 0, {
           patch: {
             positions: p.positions,
@@ -115,7 +133,14 @@ export class ReplayEngine {
       } else if (ev.event_type === "STAMINA" && t !== null) {
         push("state", 0, { patch: { teamStamina: { teamIndex: t, stamina: p.stamina } } });
       } else if (ev.event_type === "ROUND_WON") {
-        push("state", 0, { patch: { rounds: p.rounds_won, winner: p.winner } });
+        // Update the round score and show a transient "ROUND N — RED/BLUE" banner.
+        // NOTE: do NOT set `winner` here — the match winner only comes at MATCH_FINISHED.
+        push("state", 0, {
+          patch: {
+            rounds: p.rounds_won,
+            banner: { text: `ROUND ${p.round} — ${TEAM_NAMES[p.winner]}`, round: p.round },
+          },
+        });
       } else if (ev.event_type === "MATCH_FINISHED") {
         push("state", 0, { patch: { winner: p.winner, rounds: p.rounds_won } });
       }
@@ -123,12 +148,14 @@ export class ReplayEngine {
     return segments;
   }
 
-  applySegment(seg) {
+  applySegment(seg, local) {
     const st = this.state;
     if (seg.type === "move") {
       const f = st.fighters[seg.teamIndex];
       if (!f) return;
-      f.x = seg.to;
+      // Interpolate the world position over the segment so the fighters glide
+      // instead of teleporting. `local` is the 0..1 progress within the segment.
+      f.x = seg.from + (seg.to - seg.from) * local;
       f.action = seg.action;
       f.actionStart = seg.start;
       f.actionDur = seg.dur;
@@ -145,7 +172,7 @@ export class ReplayEngine {
       f.action = "hit";
       f.actionStart = seg.start;
       f.actionDur = seg.dur;
-      f.pulseUntil = seg.end;
+      f.pulseUntil = seg.end; // renderer uses this for the flash + knockback
     } else if (seg.type === "block") {
       const f = st.fighters[seg.teamIndex];
       if (!f) return;
@@ -163,6 +190,7 @@ export class ReplayEngine {
     } else if (seg.type === "state") {
       const p = seg.patch || {};
       if (p.reset) {
+        // New round: reset both fighters to idle and clear all transient effects.
         st.fighters.forEach((f) => {
           f.action = "idle";
           f.actionStart = seg.start;
@@ -171,6 +199,7 @@ export class ReplayEngine {
           f.guardUntil = -1;
           f.dodgeUntil = -1;
         });
+        st.roundBanner = null;
       }
       if (Array.isArray(p.positions)) {
         st.fighters.forEach((f, i) => { f.x = p.positions[i] ?? f.x; });
@@ -191,15 +220,21 @@ export class ReplayEngine {
         const f = st.fighters[p.teamStamina.teamIndex];
         if (f) f.stamina = p.teamStamina.stamina;
       }
+      if (p.banner) {
+        st.roundBanner = { text: p.banner.text, until: seg.start + ROUND_BANNER_MS };
+      }
       if (typeof p.winner === "number") st.winner = p.winner;
     }
   }
 
   applyProgress(t) {
+    // Rebuild the state from scratch and replay every segment whose start is <= t.
+    // This keeps seeking deterministic (no accumulated drift).
     this.state = new MatchState(this.teams);
     for (const seg of this.segments) {
       if (seg.start > t) break;
-      this.applySegment(seg);
+      const local = Math.min(1, (t - seg.start) / Math.max(0.0001, seg.dur));
+      this.applySegment(seg, local);
     }
     this.t = t;
     return this.state;

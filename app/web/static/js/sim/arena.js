@@ -23,7 +23,7 @@ export const TEAM_NAMES = ["RED", "BLUE"];
 export const SPRITES = {
   red: {
     frame: 162,
-    displayHeight: 200,
+    displayHeight: 160,
     actions: {
       idle: "Idle",
       run: "Run",
@@ -38,7 +38,7 @@ export const SPRITES = {
   },
   blue: {
     frame: 250,
-    displayHeight: 200,
+    displayHeight: 160,
     actions: {
       idle: "Idle",
       run: "Run",

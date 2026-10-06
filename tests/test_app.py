@@ -454,3 +454,41 @@ def test_strategy_presets(app):
         assert "custom" in settings_service.get_strategies()
         settings_service.reset_strategies()
         assert "custom" not in settings_service.get_strategies()
+
+
+def test_state_events_payload_flattened(app):
+    from app.domain.taekwondo.body.parameters import default_parameters
+    from app.domain.taekwondo.engine import FightEngine
+    from app.infrastructure.llm.mock import MockLLMProvider
+
+    def resolve(ref):
+        return MockLLMProvider(), "mock-model"
+
+    teams = [
+        {"name": f"T{ti}", "instructions": "", "players": [
+            {"slot": 1, "name": f"F{ti}", "attributes": {k: 5 for k in default_parameters()}, "brain": {}}
+        ]}
+        for ti in range(2)
+    ]
+    engine = FightEngine(teams, resolve, seed=1)
+    events, _, _ = engine.run()
+
+    # State fields must live at payload.* (NOT payload.payload.*), which is what the
+    # JS simulator and the interaction log consume.
+    started = events[0]
+    assert started["event_type"] == "MATCH_STARTED"
+    assert isinstance(started["payload"]["rounds_won"], list)
+    assert isinstance(started["payload"]["positions"], list)
+
+    round_started = next(e for e in events if e["event_type"] == "ROUND_STARTED")
+    assert isinstance(round_started["payload"]["positions"], list)
+    assert round_started["payload"]["round"] == 1
+
+    round_won = next(e for e in events if e["event_type"] == "ROUND_WON")
+    assert isinstance(round_won["payload"]["winner"], int)
+    assert isinstance(round_won["payload"]["rounds_won"], list)
+
+    finished = events[-1]
+    assert finished["event_type"] == "MATCH_FINISHED"
+    assert isinstance(finished["payload"]["winner"], int)
+    assert isinstance(finished["payload"]["rounds_won"], list)

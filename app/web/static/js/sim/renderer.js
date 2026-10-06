@@ -1,13 +1,27 @@
 /*
  * renderer.js — side-view arena renderer.
  *
- * Draws the two fighters (sprite animation), their health/stamina bars, a distance
- * gauge, hit flashes, block guards, dodge leans, and the victory overlay. It is
- * driven entirely by the replayed MatchState and the current time `t`.
+ * Layout: the two fighters are drawn on FIXED opposite sides (red left, blue right)
+ * with a horizontal gap derived from the current *distance* between them. This keeps
+ * them from ever overlapping while still letting "advance / retreat" read as the gap
+ * shrinking or growing. Health/stamina bars sit above each fighter, a distance gauge
+ * sits at the top, and a transient "ROUND N — RED/BLUE" banner plus a final victory
+ * overlay communicate the result.
+ *
+ * Hit feedback: while a fighter is within its hit window it is (a) flashed red,
+ * (b) knocked backward with a decaying offset, and (c) shows an impact burst at the
+ * point of contact. A block draws a green guard arc; a dodge leans the fighter aside.
  */
 
-import { worldToScreenX, spriteFor } from "./arena.js";
+import { spriteFor } from "./arena.js";
 import { getFrame } from "./fighters.js";
+
+// Arena layout: min/max pixel gap between the fighters (mapped from distance 0..100).
+const GAP_MIN = 170;
+const GAP_MAX = 380;
+// Hit feedback constants (must roughly match replay.js HIT_DUR).
+const HIT_FLASH_MS = 380;
+const KNOCKBACK_PX = 28;
 
 export class Renderer {
   constructor(canvas) {
@@ -27,6 +41,7 @@ export class Renderer {
   }
 
   resize() {
+    // The canvas fills its container width; height is derived at a 16:9-ish ratio.
     const rect = this.canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     this.width = rect.width || 960;
@@ -34,10 +49,12 @@ export class Renderer {
     this.canvas.width = Math.round(this.width * dpr);
     this.canvas.height = Math.round(this.height * dpr);
     this.canvas.style.height = `${this.height}px`;
+    // Set the transform so we draw in CSS pixels regardless of devicePixelRatio.
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   frameIndexFor(f, t, frameCount) {
+    // Looping poses (idle/run) cycle continuously; one-shot poses play once.
     if (f.action === "idle" || f.action === "run") {
       return Math.floor((t / 120) % frameCount);
     }
@@ -52,7 +69,6 @@ export class Renderer {
     const groundY = H - 60;
 
     ctx.clearRect(0, 0, W, H);
-
     this.drawBackground(ctx, W, H);
 
     // Ground line.
@@ -63,21 +79,32 @@ export class Renderer {
     ctx.lineTo(W, groundY);
     ctx.stroke();
 
-    // Distance gauge (top center).
     this.drawDistance(ctx, state, W);
 
-    // Fighters (draw the one on the left first, then the right, so the nearer one
-    // overlaps when they are close).
-    const [a, b] = state.fighters[0].x <= state.fighters[1].x
-      ? [state.fighters[0], state.fighters[1]]
-      : [state.fighters[1], state.fighters[0]];
-    this.drawFighter(ctx, a, state, t, groundY);
-    this.drawFighter(ctx, b, state, t, groundY);
+    // Distance (world units) -> pixel gap. Clamped so the fighters never overlap.
+    const distance = Math.abs(state.fighters[0].x - state.fighters[1].x);
+    const gap = Math.max(GAP_MIN, Math.min(GAP_MAX, this.mapDistanceToGap(distance)));
+    const centerX = W / 2;
 
-    // Victory overlay.
+    // Red (team 0) always on the left, blue (team 1) always on the right.
+    this.drawFighter(ctx, state.fighters[0], centerX - gap / 2, t, groundY);
+    this.drawFighter(ctx, state.fighters[1], centerX + gap / 2, t, groundY);
+
+    // Transient round banner (shown only for ROUND_BANNER_MS after a round ends).
+    if (state.roundBanner && t < state.roundBanner.until) {
+      this.drawRoundBanner(ctx, state.roundBanner, t, W);
+    }
+
+    // Final victory overlay (only once the match winner is known).
     if (state.winner !== null) {
       this.drawVictory(ctx, state, W, H);
     }
+  }
+
+  mapDistanceToGap(distance) {
+    // Linear map of world distance (0..100) into the pixel gap range (GAP_MIN..GAP_MAX).
+    const frac = Math.max(0, Math.min(1, distance / 100));
+    return GAP_MIN + (GAP_MAX - GAP_MIN) * frac;
   }
 
   drawBackground(ctx, W, H) {
@@ -112,35 +139,46 @@ export class Renderer {
     ctx.fillText(`distance ${d.toFixed(0)}`, W / 2, y + 22);
   }
 
-  drawFighter(ctx, f, state, t, groundY) {
-    const sx = worldToScreenX(f.x, this.width);
-    const opponent = state.fighters[1 - f.teamIndex];
-    const facing = opponent.x >= f.x ? 1 : -1;
+  drawFighter(ctx, f, sx, t, groundY) {
+    // Red faces right (+x), blue faces left (-x). The sprite sheet faces right, so
+    // we flip horizontally for the blue fighter.
+    const facing = f.teamIndex === 0 ? 1 : -1;
     const pose = f.health <= 0 ? "death" : f.action;
     const frame = getFrame(f.teamIndex, pose);
     const displayH = spriteFor(f.teamIndex).displayHeight;
-    const destW = displayH;
+    const destW = displayH; // square frames
     const destH = displayH;
 
-    // Hit flash: a translucent red overlay behind the fighter when recently hit.
-    if (t < f.pulseUntil) {
-      ctx.fillStyle = "rgba(248,113,113,0.35)";
+    // Hit feedback window: flash + impact burst + knockback (all decaying).
+    const hitFrac = t < f.pulseUntil ? Math.max(0, (f.pulseUntil - t) / HIT_FLASH_MS) : 0;
+
+    if (hitFrac > 0) {
+      // Impact burst at the fighter's center (expands as the hit lands).
+      const burstR = (1 - hitFrac) * 46 + 10;
+      ctx.strokeStyle = `rgba(251,191,36,${hitFrac})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(sx, groundY - destH / 2, burstR, 0, Math.PI * 2);
+      ctx.stroke();
+      // Soft red flash behind the fighter.
+      ctx.fillStyle = `rgba(248,113,113,${0.35 * hitFrac})`;
       ctx.beginPath();
       ctx.arc(sx, groundY - destH / 2, destW * 0.6, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Block guard: a colored shield arc in front of the fighter.
+    // Block guard: a green shield arc in front of the fighter.
     if (t < f.guardUntil) {
       ctx.strokeStyle = "#34d399";
       ctx.lineWidth = 6;
       ctx.beginPath();
-      const dir = facing;
-      ctx.arc(sx + dir * destW * 0.25, groundY - destH / 2, destW * 0.55, -Math.PI / 2, Math.PI / 2);
+      ctx.arc(sx + facing * destW * 0.25, groundY - destH / 2, destW * 0.55, -Math.PI / 2, Math.PI / 2);
       ctx.stroke();
     }
 
-    // Dodge lean: shift the fighter slightly and draw a motion arc.
+    // Knockback: push the fighter backward (away from the opponent) while hit.
+    const knock = hitFrac * KNOCKBACK_PX * facing; // facing points toward the opponent
+    // Dodge lean: a small lateral shift away from the incoming strike.
     const dodgeShift = t < f.dodgeUntil ? -facing * 12 : 0;
 
     if (frame) {
@@ -148,8 +186,9 @@ export class Renderer {
       const frameCount = frame.frameCount;
       const idx = this.frameIndexFor(f, t, frameCount);
       ctx.save();
-      ctx.translate(sx + dodgeShift, groundY);
+      ctx.translate(sx - knock + dodgeShift, groundY);
       ctx.scale(facing, 1);
+      // Draw one square source frame, bottom-aligned to the ground line.
       ctx.drawImage(
         frame.img,
         idx * frameSize, 0, frameSize, frameSize,
@@ -157,9 +196,9 @@ export class Renderer {
       );
       ctx.restore();
     } else {
-      // Procedural fallback silhouette.
+      // Procedural fallback silhouette when a sprite is missing.
       ctx.save();
-      ctx.translate(sx + dodgeShift, groundY);
+      ctx.translate(sx - knock + dodgeShift, groundY);
       ctx.fillStyle = f.teamIndex === 0 ? "#7dd3fc" : "#fbbf24";
       ctx.fillRect(-destW / 4, -destH, destW / 2, destH);
       ctx.beginPath();
@@ -181,7 +220,7 @@ export class Renderer {
   drawBars(ctx, f, sx, topY) {
     const w = 150;
     const x = sx - w / 2;
-    // Health bar (green -> red).
+    // Health bar (green -> amber -> red as it depletes).
     ctx.fillStyle = "#1e293b";
     ctx.fillRect(x - 2, topY - 2, w + 4, 14);
     const hfrac = Math.max(0, Math.min(1, f.health / 100));
@@ -193,6 +232,22 @@ export class Renderer {
     ctx.fillRect(x - 2, topY + 12, w + 4, 8);
     ctx.fillStyle = "#38bdf8";
     ctx.fillRect(x, topY + 14, w * sfrac, 4);
+  }
+
+  drawRoundBanner(ctx, banner, t, W) {
+    // Fade out over the last 400ms of the banner window.
+    const remaining = Math.max(0, banner.until - t);
+    const alpha = Math.min(1, remaining / 400);
+    const text = banner.text || "";
+    const y = 56;
+    ctx.font = "bold 22px system-ui";
+    const tw = ctx.measureText(text).width + 40;
+    ctx.fillStyle = `rgba(2,6,23,${0.7 * alpha})`;
+    ctx.fillRect(W / 2 - tw / 2, y - 22, tw, 44);
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, W / 2, y);
   }
 
   drawVictory(ctx, state, W, H) {

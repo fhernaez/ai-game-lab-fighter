@@ -1,0 +1,53 @@
+# Machine-readable project manifest for AI Game Lab Fighter.
+# Consumed by tooling and LLM agents. Keep in sync with specs/00_INDEX.md.
+
+project: AI Game Lab Fighter
+version: 4
+description: >-
+  Educational multi-user Flask app where students configure an AI taekwondo fighter
+  (LLM brain + 7-attribute body) and watch a deterministic fight simulation.
+
+language: python
+python: ">=3.10"
+
+stack:
+  - flask
+  - sqlalchemy
+  - alembic
+  - flask-login
+  - jinja2
+  - htmx
+  - vanilla-js
+
+database: postgresql
+queue: redis/rq
+llm: openai-compatible multi-provider (LLM_PROVIDERS env), offline mock fallback
+
+commands:
+  run: "flask --app run.py run"
+  test: "pytest"
+  migrate: "flask --app run.py db upgrade"
+  seed: "flask --app run.py seed"
+  build_image: "docker build -t ai-game-lab-fighter ."
+
+paths:
+  app_root: AI-Edu-game-lab-app-v1
+  domain: app/domain/taekwondo
+  web: app/web
+  services: app/application
+  sim: app/web/static/js/sim
+  specs: specs
+
+specs:
+  - 00_INDEX.md
+  - README.md
+  - FIGHTER_SPEC.md
+  - AGENT_ARCHITECTURE.md
+  - ARCHITECTURE.md
+  - DATA_MODEL.md
+  - PROMPT_ARCHITECTURE.md
+  - DEFAULT_PROMPTS.md
+  - EDUCATIONAL_MODEL.md
+  - CODING_AGENT_PROMPT.md
+  - SECURITY_AND_SANDBOX.md
+  - FOLDER_STRUCTURE.md

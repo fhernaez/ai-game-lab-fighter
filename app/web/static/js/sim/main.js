@@ -1,5 +1,12 @@
 /*
  * main.js — bootstrap: wire the renderer, replay engine, controls, and live client.
+ *
+ * Data flow: on load we fetch the match state + full event log, build a ReplayEngine
+ * (which compiles events into animation segments), and render it on a canvas. While
+ * the match is live, a LiveClient polls for new events and extends the timeline.
+ *
+ * Scoreboard: two panels (RED / BLUE) with the rounds won by each fighter, plus a
+ * center indicator for the current round or the final winner.
  */
 
 import { Renderer } from "./renderer.js";
@@ -8,7 +15,13 @@ import { LiveClient } from "./live.js";
 import { loadFighterSprites } from "./fighters.js";
 
 const $ = (id) => document.getElementById(id);
+
+// Statuses during which the match may still emit new events (not yet terminal).
 const LIVE = new Set(["queued", "accepted", "ready", "running"]);
+// Statuses that end the match (after which auto-play may stop at the timeline end).
+const TERMINAL = new Set(["finished", "cancelled", "failed", "declined"]);
+
+const teamLabel = (i) => (i === 0 ? "RED" : "BLUE");
 
 function fmtTime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -33,26 +46,36 @@ function setStatus(statusEl, status) {
 }
 
 function buildScoreboard(scoreboardEl, teams) {
-  const names = Array.from(new Set((teams || []).map((t) => t.name)));
   scoreboardEl.innerHTML = "";
-  names.forEach((name, i) => {
+  const panel = (i) => {
     const div = document.createElement("div");
     div.className = "team";
-    div.dataset.team = name;
-    div.innerHTML = `<div class="muted">${name} <span class="muted">(${i === 0 ? "RED" : "BLUE"})</span></div>
-      <div class="score">rounds 0 · 0</div>`;
-    scoreboardEl.appendChild(div);
-  });
+    div.dataset.side = i;
+    const name = (teams[i] && teams[i].name) || teamLabel(i);
+    div.innerHTML = `<div class="muted">${name} <span class="muted">(${teamLabel(i)})</span></div>
+      <div class="score">Rounds: 0</div>`;
+    return div;
+  };
+  const indicator = document.createElement("div");
+  indicator.id = "round-indicator";
+  indicator.className = "muted";
+  indicator.style.cssText = "align-self:center; font-weight:600;";
+  indicator.textContent = "Round 1 / 3";
+  scoreboardEl.append(panel(0), indicator, panel(1));
 }
 
 function updateScoreboard(scoreboardEl, state) {
-  const names = Array.from(new Set(state.teams.map((t) => t.name)));
-  names.forEach((name, i) => {
-    const node = scoreboardEl.querySelector(`[data-team="${name}"] .score`);
-    if (!node) return;
-    const rounds = (state.rounds && state.rounds[i]) || 0;
-    node.textContent = `rounds ${rounds} · ${state.rounds[1 - i]}`;
+  state.fighters.forEach((f, i) => {
+    const node = scoreboardEl.querySelector(`[data-side="${i}"] .score`);
+    if (node) node.textContent = `Rounds: ${state.rounds[i] || 0}`;
   });
+  const ind = scoreboardEl.querySelector("#round-indicator");
+  if (!ind) return;
+  if (state.winner !== null) {
+    ind.textContent = `${teamLabel(state.winner)} WINS`;
+  } else {
+    ind.textContent = `Round ${state.currentRound} / 3`;
+  }
 }
 
 function logEvent(logEl, ev) {
@@ -61,7 +84,8 @@ function logEvent(logEl, ev) {
   const p = ev.payload || {};
   let detail = "";
   if (ev.event_type === "DECISION") {
-    detail = `${p.message || ""} <span class="muted">(${p.move} · ${p.action}${p.action === "BLOCK" || p.action === "DODGE" ? "" : " " + p.height} power=${Number(p.power || 0).toFixed(2)})</span>`;
+    const zone = p.action === "BLOCK" || p.action === "DODGE" ? "" : " " + p.height;
+    detail = `${p.message || ""} <span class="muted">(${p.move} · ${p.action}${zone} power=${Number(p.power || 0).toFixed(2)})</span>`;
     if (p.error) detail += `<br><span class="etype">⚠ ${p.error}</span>`;
   } else if (ev.event_type === "MOVEMENT") {
     detail = `move ${p.move} · ${Number(p.from_pos).toFixed(0)} → ${Number(p.to_pos).toFixed(0)}`;
@@ -78,11 +102,13 @@ function logEvent(logEl, ev) {
   } else if (ev.event_type === "STAMINA") {
     detail = `stamina → ${Number(p.stamina).toFixed(0)}`;
   } else if (ev.event_type === "ROUND_WON") {
-    detail = `round ${p.round} won by team ${p.winner}`;
+    const rw = p.rounds_won || [0, 0];
+    detail = `${teamLabel(p.winner)} wins round ${p.round} (rounds ${rw[0]}-${rw[1]})`;
   } else if (ev.event_type === "MATCH_FINISHED") {
-    detail = `winner: team ${p.winner}`;
+    const rw = p.rounds_won || [0, 0];
+    detail = `${teamLabel(p.winner)} WINS (rounds ${rw[0]}-${rw[1]})`;
   } else if (ev.event_type === "ROUND_STARTED") {
-    detail = `round ${p.round}`;
+    detail = `round ${p.round} starts`;
   }
   item.innerHTML = `<span class="etype">${ev.event_type}</span> <span class="muted">${ev.actor_id || ""}${typeof p.team === "number" ? " · team " + p.team : ""}</span><br>${detail}`;
   logEl.appendChild(item);
@@ -120,8 +146,9 @@ function logEvent(logEl, ev) {
 
   const stateRes = await (await fetch(`/api/matches/${matchId}/state`)).json();
   const teams = stateRes.teams || [];
+  let status = stateRes.status;
   buildScoreboard(scoreboardEl, teams);
-  setStatus(statusEl, stateRes.status);
+  setStatus(statusEl, status);
 
   const eventsRes = await (await fetch(`/api/matches/${matchId}/events`)).json();
   const allEvents = eventsRes.events || [];
@@ -147,9 +174,7 @@ function logEvent(logEl, ev) {
     if (!engine.duration) return;
     if (playing) setPlaying(false);
     else {
-      if (engine.t >= engine.duration) {
-        engine.seek(0);
-      }
+      if (engine.t >= engine.duration) engine.seek(0);
       setPlaying(true);
     }
   });
@@ -159,15 +184,12 @@ function logEvent(logEl, ev) {
   scrub.addEventListener("input", () => {
     engine.seek(parseFloat(scrub.value));
   });
-  stepBack.addEventListener("click", () => {
-    engine.seek(engine.t - 400);
-  });
-  stepFwd.addEventListener("click", () => {
-    engine.seek(engine.t + 400);
-  });
+  stepBack.addEventListener("click", () => engine.seek(engine.t - 400));
+  stepFwd.addEventListener("click", () => engine.seek(engine.t + 400));
 
   const live = new LiveClient(matchId, {
     onEvents: (events) => {
+      // Extend the timeline with any new events that arrived since the last poll.
       events.forEach((e) => engine.events.push(e));
       engine.segments = engine.build();
       engine.duration = engine.segments.length
@@ -176,7 +198,10 @@ function logEvent(logEl, ev) {
       scrub.max = engine.duration || 1;
       events.forEach((e) => logEvent(logEl, e));
     },
-    onStatus: (status) => setStatus(statusEl, status),
+    onStatus: (s) => {
+      status = s;
+      setStatus(statusEl, s);
+    },
     onError: () => setStatus(statusEl, "reconnecting"),
   });
 
@@ -187,14 +212,15 @@ function logEvent(logEl, ev) {
     if (playing) {
       const nt = Math.min(engine.duration, engine.t + dt * engine.speed);
       engine.applyProgress(nt);
-      if (nt >= engine.duration) setPlaying(false);
+      // Only stop auto-play once the match is terminal; while live, keep playing so
+      // the timeline keeps advancing as new events arrive.
+      if (nt >= engine.duration && TERMINAL.has(status)) setPlaying(false);
     }
     renderer.draw(engine.state, engine.t);
     updateScoreboard(scoreboardEl, engine.state);
     updateScrub();
     requestAnimationFrame(frame);
   }
-  // Auto-play on load; the user can pause/resume via the button.
   setPlaying(true);
   requestAnimationFrame(frame);
 

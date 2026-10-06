@@ -94,6 +94,44 @@ model, params, attributes, `skill_id`/`tool_id`), `MOVEMENT`, `ATTACK`, `HIT`, `
 `DODGE`, `DAMAGE`, `STAMINA`, `ROUND_WON`, `MATCH_FINISHED`. Events are persisted
 incrementally (one commit per event) so the live view updates in real time.
 
+### 5.1 Event contract (exact payload shapes)
+
+Every event is a dict `{"event_type", "actor_id", "payload"}`. The **graphical
+simulation and the interaction log read fields directly at `payload.<field>`**. Do NOT
+nest a second `payload` inside `payload`.
+
+**State-carrying events** (emitted flat via `engine._state_payload`):
+
+```jsonc
+// MATCH_STARTED / EXCHANGE_STARTED
+{"event_type": "...", "actor_id": null,
+ "payload": {"rounds_won": [0,0], "current_round": 1, "exchange": 0,
+             "health": [100,100], "stamina": [100,100], "positions": [20,80],
+             "distance": 60, "damage_dealt": [0,0], "winner": null}}
+
+// ROUND_STARTED  -> same + {"round": 1}
+// ROUND_WON      -> same + {"round": 1, "winner": 0}
+// MATCH_FINISHED -> same, with "winner": 0|1 set
+```
+
+**Action events** (fields at `payload.<field>`):
+
+```jsonc
+// MOVEMENT  {"team": 0|1, "move": "ADVANCE|RETREAT|JUMP|HOLD", "from_pos": f, "to_pos": f}
+// ATTACK    {"team": 0|1, "action": "...", "height": "HEAD|BODY",
+//            "result": "hit|miss|dodged", "reason"?, "damage"?, "distance"?: f}
+// HIT       {"team": 0|1, "damage": f}
+// BLOCK     {"team": 0|1, "reduction": f}
+// DODGE     {"team": 0|1}
+// DAMAGE    {"team": 0|1, "damage": f, "health": f}
+// STAMINA   {"team": 0|1, "cost": f, "stamina": f}
+// DECISION  {"team": 0|1, "team_name", "slot", "action_hint", "message",
+//            "move", "action", "height", "power", "distance",
+//            "prompt", "model", "params", "attributes", "raw", "parsed", "error", ...}
+```
+
+`team` is `0` (RED, host) or `1` (BLUE, guest).
+
 ## 6. Multi-user fights
 
 `created → invited → accepted → (both ready) → running → finished/cancelled/declined`.
