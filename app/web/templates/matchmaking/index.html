@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Matchmaking — AI Game Lab{% endblock %}
+{% block content %}
+<h1>Matchmaking</h1>
+
+<div class="panel">
+  <h2>Create a fight</h2>
+  <form method="post" action="{{ url_for('matchmaking.create') }}" class="row">
+    <select name="difficulty">
+      <option value="easy">Easy (45 points)</option>
+      <option value="medium" selected>Medium (25 points)</option>
+      <option value="hard">Hard (12 points)</option>
+    </select>
+    <button class="btn" type="submit">Create</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>My matches</h2>
+  {% if matches %}
+  <table>
+    <thead><tr><th>ID</th><th>Difficulty</th><th>Opponent</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for m in matches %}
+      <tr>
+        <td>{{ m.id }}</td>
+        <td>{{ m.difficulty }}</td>
+        <td>
+          {% if m.host_id == current_user.id %}
+            {{ m.guest.username if m.guest else '—' }}
+          {% else %}
+            {{ m.host.username }}
+          {% endif %}
+        </td>
+        <td><span class="badge badge-{{ m.status }}">{{ m.status }}</span></td>
+        <td><a class="btn btn-secondary btn-sm" href="{{ url_for('matches.view', match_id=m.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No matches yet. Create one above.</p>
+  {% endif %}
+</div>
+
+{% if online %}
+<div class="panel">
+  <h2>Online players</h2>
+  <div class="row" id="online-badges">
+    {% for u in online %}
+    <span class="badge">{{ u.username }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<script>
+  // Live online-players list.
+  (function () {
+    const box = document.getElementById("online-badges");
+    if (!box) return;
+    setInterval(async () => {
+      try {
+        const data = await (await fetch("/api/online-users")).json();
+        box.innerHTML = "";
+        data.users.forEach((u) => {
+          const b = document.createElement("span");
+          b.className = "badge"; b.textContent = u.username;
+          box.appendChild(b);
+        });
+      } catch (e) {}
+    }, 3000);
+  })();
+
+  // Refresh the page periodically so invitations and match status changes appear.
+  setTimeout(() => { if (document.visibilityState === "visible") window.location.reload(); }, 10000);
+</script>
+{% endblock %}

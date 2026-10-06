@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Settings — AI Game Lab{% endblock %}
+{% block content %}
+<h1>General Settings</h1>
+
+<div class="row" style="margin-bottom: 1rem;">
+  <a class="btn btn-secondary" href="{{ url_for('settings.core') }}">Core files (rules &amp; physics)</a>
+  <a class="btn btn-secondary" href="{{ url_for('settings.strategies') }}">Strategy presets</a>
+</div>
+
+<div class="panel">
+  <h2>Environment</h2>
+  <table>
+    <tbody>
+      <tr><th>Database</th><td>{{ info.database_uri }}</td></tr>
+      <tr><th>Default provider</th><td>{{ info.default_provider }}</td></tr>
+      <tr><th>Default model</th><td>{{ info.default_model }}</td></tr>
+      <tr><th>Redis</th><td>{{ info.redis_url }}</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Providers (URL + API key) are defined in the <code>LLM_PROVIDERS</code>
+  environment variable; the model list per provider is managed below.</p>
+</div>
+
+{% if is_admin %}
+<form method="post">
+  <div class="panel">
+    <h2>Models per provider (admin)</h2>
+    <p class="muted"><code>mock</code> is the deterministic offline provider used for
+    testing — it needs no URL or API key.</p>
+    <table>
+      <thead><tr><th>Provider</th><th>Models (comma-separated)</th></tr></thead>
+      <tbody>
+        {% for pid in providers %}
+        <tr>
+          <td><span class="badge">{{ pid }}</span></td>
+          <td><input type="text" name="models_{{ pid }}" value="{{ provider_models.get(pid, []) | join(', ') }}"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <label>Global default model</label>
+    <select name="default_model">
+      <option value="">(use environment default)</option>
+      {% for pid in providers %}
+      <optgroup label="{{ pid }}">
+        {% for m in provider_models.get(pid, []) %}
+        {% set ref = pid ~ ':' ~ m %}
+        <option value="{{ ref }}" {% if default_model == ref %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="row" style="margin-bottom: 2rem;">
+    <button class="btn" type="submit">Save settings</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

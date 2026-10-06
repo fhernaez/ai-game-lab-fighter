@@ -1,0 +1,20 @@
+# Playground (arena)
+
+```yaml
+arena:
+  type: line
+  min: 0
+  max: 100
+  red_start: 20
+  blue_start: 80
+
+fighter:
+  max_health: 100
+  max_stamina: 100
+  attributes: [kick_speed, kick_power, precision, defense, agility, stamina, reach]
+
+match:
+  rounds_to_win: 2
+  max_rounds: 3
+  max_exchanges: 30
+```

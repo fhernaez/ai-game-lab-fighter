@@ -1,0 +1,11 @@
+name: taekwondo
+version: 4
+title: Taekwondo Fighter
+description: >-
+  A 1v1 taekwondo fight between two AI fighters. Each team configures one agent
+  that commands a fighter (brain: LLM; body: 7 attributes; core: deterministic
+  combat). Reference moves and sprites adapted from alinikan/StreetFighter (CC-0).
+agents:
+  - id: fighter
+    file: agents/fighter.md
+skills_dir: skills
